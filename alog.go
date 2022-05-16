@@ -28,15 +28,21 @@ func New(w io.Writer) *Alog {
 	if w == nil {
 		w = os.Stdout
 	}
-	return &Alog{
-		dest: w,
+	return &Alog{ // it reads better to initialize these structs in a return
+		dest:    w,
+		msgCh:   make(chan string),
+		errorCh: make(chan error),
+		m:       &sync.Mutex{}, // this is functionally equiv to a variable mapped to new(sync.Mutex)
 	}
 }
 
 // Start begins the message loop for the asynchronous logger. It should be initiated as a goroutine to prevent
 // the caller from being blocked.
 func (al Alog) Start() {
-
+	for { // this is an infinite for loop
+		msg := <-al.msgCh     // this reads bytes from the msgCh channel
+		go al.write(msg, nil) // this spawns a new goroutine every time it's called
+	}
 }
 
 func (al Alog) formatMessage(msg string) string {
@@ -47,21 +53,29 @@ func (al Alog) formatMessage(msg string) string {
 }
 
 func (al Alog) write(msg string, wg *sync.WaitGroup) {
+	al.m.Lock()         // this locks the mutex
+	defer al.m.Unlock() // a defer statement defers the execution of a fucntion until the surrounding function returns
+	_, err := al.dest.Write([]byte(al.formatMessage(msg)))
+	if err != nil { // if there's an error, create a goroutine to pipe that error into the errorCh, this prevents deadlocking
+		go func(err error) {
+			al.errorCh <- err
+		}(err)
+	}
 }
 
 func (al Alog) shutdown() {
 }
 
 // MessageChannel returns a channel that accepts messages that should be written to the log.
-func (al Alog) MessageChannel() chan string {
-	return nil
+func (al Alog) MessageChannel() chan<- string { // addded 'chan<-', since msgCh will never send messages to consumers
+	return al.msgCh
 }
 
 // ErrorChannel returns a channel that will be populated when an error is raised during a write operation.
 // This channel should always be monitored in some way to prevent deadlock goroutines from being generated
 // when errors occur.
-func (al Alog) ErrorChannel() chan error {
-	return nil
+func (al Alog) ErrorChannel() <-chan error { // added '<-chan', since errorCh will only receive messages on this channel
+	return al.errorCh
 }
 
 // Stop shuts down the logger. It will wait for all pending messages to be written and then return.
